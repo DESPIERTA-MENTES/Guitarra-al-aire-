@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="es" class="dark h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Air String - Arpa Virtual de Manos</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #030712; touch-action: none; }
+        
+        .video-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #030712;
+        }
+
+        #webcam {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.75;
+            z-index: 1;
+        }
+
+        #output_canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        #ui-layer {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 1.25rem;
+        }
+
+        .pointer-events-auto { pointer-events: auto; }
+    </style>
+</head>
+<body class="text-white antialiased">
+
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="output_canvas"></canvas>
+
+        <!-- Pantalla de inicio central para activar Cámara y Audio con un toque -->
+        <div id="start-overlay" class="relative z-20 bg-gray-900/95 border border-indigo-500/40 rounded-3xl p-6 max-w-sm mx-4 text-center shadow-2xl space-y-4">
+            <div class="w-16 h-16 mx-auto rounded-2xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-cyan-400 text-3xl">
+                <i class="fa-solid fa-hand-sparkles"></i>
+            </div>
+            <h2 class="text-xl font-black tracking-wide">AIR STRING</h2>
+            <p class="text-xs text-gray-300 leading-relaxed">
+                Haz pinza (pulgar + índice) con ambas manos para crear una cuerda en el aire y pásale un dedo por encima para tocarla.
+            </p>
+            <button id="launch-btn" class="w-full py-3.5 px-5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center justify-center gap-2 cursor-pointer">
+                <i class="fa-solid fa-camera"></i> Iniciar Cámara y Audio
+            </button>
+            <p id="overlay-error" class="hidden text-xs font-mono text-red-400 bg-red-950/60 border border-red-800 rounded-xl p-2.5 text-left"></p>
+        </div>
+    </div>
+
+    <!-- UI Overlay Superior e Inferior -->
+    <div id="ui-layer">
+        <div class="flex flex-wrap justify-between items-start gap-2 pointer-events-auto">
+            <div class="bg-gray-900/85 backdrop-blur-md border border-gray-700/60 rounded-2xl px-4 py-3 shadow-xl max-w-md">
+                <div class="flex items-center gap-2 mb-1">
+                    <span id="cam-dot" class="w-2.5 h-2.5 rounded-full bg-gray-500"></span>
+                    <span class="text-xs font-bold tracking-wider uppercase text-gray-200">Estado del Sistema</span>
+                </div>
+                <p id="status-text" class="text-xs font-mono text-amber-400">
+                    Esperando clic en "Iniciar Cámara y Audio"...
+                </p>
+            </div>
+
+            <button id="test-sound-btn" class="bg-gray-900/85 hover:bg-gray-800 text-cyan-300 border border-cyan-500/40 text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg flex items-center gap-2 transition active:scale-95 cursor-pointer">
+                <i class="fa-solid fa-music"></i> Probar Sonido
+            </button>
+        </div>
+
+        <div class="flex justify-between items-end pointer-events-auto w-full">
+            <div class="bg-gray-900/80 backdrop-blur border border-gray-800 rounded-xl px-3 py-2 flex items-center gap-4 text-xs font-mono">
+                <div>Nota: <span id="freq-display" class="text-cyan-400 font-bold">-- Hz</span></div>
+                <div>Largo: <span id="dist-display" class="text-indigo-400">-- px</span></div>
+            </div>
+            
+            <label class="flex items-center gap-2 bg-gray-900/80 backdrop-blur border border-gray-800 rounded-xl px-3 py-2 cursor-pointer">
+                <span class="text-xs text-gray-300">Esqueleto</span>
+                <input type="checkbox" id="show-skeleton" checked class="w-4 h-4 text-indigo-500 rounded bg-gray-800 border-gray-600">
+            </label>
+        </div>
+    </div>
+
+    <!-- Script estándar (no module) para garantizar ejecución inmediata -->
+    <script>
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const statusText = document.getElementById("status-text");
+        const camDot = document.getElementById("cam-dot");
+        const startOverlay = document.getElementById("start-overlay");
+        const launchBtn = document.getElementById("launch-btn");
+        const overlayError = document.getElementById("overlay-error");
+        const testSoundBtn = document.getElementById("test-sound-btn");
+        const freqDisplay = document.getElementById("freq-display");
+        const distDisplay = document.getElementById("dist-display");
+        const showSkeletonCheckbox = document.getElementById("show-skeleton");
+
+        let handLandmarker = null;
+        let lastVideoTime = -1;
+        let isLoopRunning = false;
+        let isPlucking = false;
+
+        let stringEndpoints = {
+            p1: null,
+            p2: null,
+            active: false
+        };
+
+        // ==========================================
+        // 1. MOTOR DE AUDIO (Web Audio API)
+        // ==========================================
+        let audioCtx = null;
+        let masterGain = null;
+        let isAudioReady = false;
+
+        async function initAudio() {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!audioCtx) {
+                audioCtx = new AudioContextClass();
+                masterGain = audioCtx.createGain();
+                masterGain.gain.value = 0.85;
+                masterGain.connect(audioCtx.destination);
+            }
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+            isAudioReady = true;
+        }
+
+        function pluckString(frequency) {
+            if (!isAudioReady || !audioCtx) return;
+            const now = audioCtx.currentTime;
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            const filter = audioCtx.createBiquadFilter();
+
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(frequency, now);
+
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(frequency * 3.5, now);
+            filter.frequency.exponentialRampToValueAtTime(frequency, now + 0.9);
+
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(0.75, now + 0.015);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 1.4);
+
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(masterGain);
+
+            osc.start(now);
+            osc.stop(now + 1.5);
+        }
+
+        testSoundBtn.addEventListener('click', async () => {
+            await initAudio();
+            pluckString(440);
+        });
+
+        // ==========================================
+        // 2. ACTIVACIÓN DE CÁMARA
+        // ==========================================
+        function showError(msg) {
+            overlayError.textContent = msg;
+            overlayError.classList.remove('hidden');
+            statusText.textContent = msg;
+            statusText.className = "text-xs font-mono text-red-400";
+            camDot.className = "w-2.5 h-2.5 rounded-full bg-red-500";
+        }
+
+        async function startSystem() {
+            overlayError.classList.add('hidden');
+            launchBtn.disabled = true;
+            launchBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Abriendo cámara...';
+
+            // 1. Iniciar Audio
+            try {
+                await initAudio();
+            } catch (e) {
+                console.warn("Audio:", e);
+            }
+
+            // 2. Verificar soporte de cámara
+            if (window.location.protocol === 'file:') {
+                launchBtn.disabled = false;
+                launchBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Reintentar';
+                showError('Estás abriendo el archivo como "file://". Los navegadores bloquean la cámara en archivos locales. Ábrelo con Live Server (localhost) o HTTPS.');
+                return;
+            }
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                launchBtn.disabled = false;
+                launchBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Reintentar';
+                showError('navigator.mediaDevices no está disponible. Asegúrate de usar HTTPS o localhost y que el iframe/navegador tenga permiso de cámara.');
+                return;
+            }
+
+            // 3. Abrir Cámara
+            try {
+                let stream;
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: false
+                    });
+                } catch (e) {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                }
+
+                video.srcObject = stream;
+                await video.play();
+
+                startOverlay.classList.add('hidden');
+                camDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse";
+                statusText.textContent = "Cámara activa. Descargando IA de manos...";
+                statusText.className = "text-xs font-mono text-cyan-400";
+
+                if (!isLoopRunning) {
+                    isLoopRunning = true;
+                    requestAnimationFrame(predictWebcam);
+                }
+
+                // 4. Cargar MediaPipe en segundo plano sin bloquear el video
+                loadHandTracking();
+
+            } catch (err) {
+                launchBtn.disabled = false;
+                launchBtn.innerHTML = '<i class="fa-solid fa-camera"></i> Reintentar Cámara';
+                showError(`No se pudo abrir la cámara (${err.name}): ${err.message}`);
+            }
+        }
+
+        launchBtn.addEventListener('click', startSystem);
+
+        // ==========================================
+        // 3. CARGA DINÁMICA DE MEDIAPIPE HANDS
+        // ==========================================
+        async function loadHandTracking() {
+            try {
+                const visionModule = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
+                const { HandLandmarker, FilesetResolver } = visionModule;
+
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+                );
+
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 2,
+                    minHandDetectionConfidence: 0.5,
+                    minHandPresenceConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                statusText.textContent = "¡Listo! Haz pinza (pulgar + índice) con ambas manos.";
+                statusText.className = "text-xs font-mono text-emerald-400";
+            } catch (err) {
+                console.error("Error IA:", err);
+                statusText.textContent = `Cámara OK, pero falló la IA de manos: ${err.message}`;
+                statusText.className = "text-xs font-mono text-amber-400";
+            }
+        }
+
+        // ==========================================
+        // 4. BUCLE DE DETECCIÓN Y CUERDA VIRTUAL
+        // ==========================================
+        function predictWebcam() {
+            if (video.readyState >= 2 && video.videoWidth > 0) {
+                if (canvasElement.width !== video.videoWidth) {
+                    canvasElement.width = video.videoWidth;
+                    canvasElement.height = video.videoHeight;
+                }
+
+                if (handLandmarker && lastVideoTime !== video.currentTime) {
+                    lastVideoTime = video.currentTime;
+                    const results = handLandmarker.detectForVideo(video, performance.now());
+                    
+                    canvasCtx.save();
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    processHandData(results);
+                    canvasCtx.restore();
+                }
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        function processHandData(results) {
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+            
+            let pinches = [];
+            let allFingers = [];
+
+            if (results.landmarks) {
+                for (let i = 0; i < results.landmarks.length; i++) {
+                    const landmarks = results.landmarks[i];
+                    
+                    if (showSkeletonCheckbox.checked) {
+                        drawSkeleton(landmarks, w, h);
+                    }
+
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    const middleTip = landmarks[12];
+
+                    const thumbPx = { x: thumbTip.x * w, y: thumbTip.y * h };
+                    const indexPx = { x: indexTip.x * w, y: indexTip.y * h };
+                    const midPx = { x: middleTip.x * w, y: middleTip.y * h };
+
+                    allFingers.push(indexPx, midPx);
+
+                    const pinchDist = Math.hypot(thumbPx.x - indexPx.x, thumbPx.y - indexPx.y);
+                    const PINCH_THRESHOLD = 48; 
+
+                    if (pinchDist < PINCH_THRESHOLD) {
+                        const pinchCenter = {
+                            x: (thumbPx.x + indexPx.x) / 2,
+                            y: (thumbPx.y + indexPx.y) / 2
+                        };
+                        pinches.push(pinchCenter);
+                        drawPoint(pinchCenter.x, pinchCenter.y, '#818cf8', 10);
+                    }
+                }
+            }
+
+            if (pinches.length >= 2) {
+                stringEndpoints.p1 = pinches[0];
+                stringEndpoints.p2 = pinches[1];
+                stringEndpoints.active = true;
+            } else {
+                stringEndpoints.active = false;
+            }
+
+            if (stringEndpoints.active && stringEndpoints.p1 && stringEndpoints.p2) {
+                const p1 = stringEndpoints.p1;
+                const p2 = stringEndpoints.p2;
+
+                const stringLenPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+                const minLen = 50; 
+                const maxLen = w * 0.8;
+                const clampedLen = Math.max(minLen, Math.min(stringLenPx, maxLen));
+                const freq = mapRange(clampedLen, minLen, maxLen, 880, 110); 
+                
+                distDisplay.textContent = Math.round(stringLenPx) + " px";
+                freqDisplay.textContent = Math.round(freq) + " Hz";
+
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(p1.x, p1.y);
+                canvasCtx.lineTo(p2.x, p2.y);
+                canvasCtx.lineWidth = isPlucking ? 7 : 3.5;
+                canvasCtx.strokeStyle = isPlucking ? '#38bdf8' : '#6366f1'; 
+                canvasCtx.lineCap = "round";
+                canvasCtx.shadowBlur = isPlucking ? 22 : 12;
+                canvasCtx.shadowColor = isPlucking ? '#38bdf8' : '#6366f1';
+                canvasCtx.stroke();
+                canvasCtx.shadowBlur = 0;
+
+                let fingerTouching = false;
+                for (let finger of allFingers) {
+                    if (Math.hypot(finger.x - p1.x, finger.y - p1.y) < 60 || 
+                        Math.hypot(finger.x - p2.x, finger.y - p2.y) < 60) {
+                        continue;
+                    }
+
+                    const distToLine = distToSegment(finger, p1, p2);
+                    if (distToLine < 32) {
+                        fingerTouching = true;
+                        drawPoint(finger.x, finger.y, '#facc15', 11);
+                        break;
+                    }
+                }
+
+                if (fingerTouching && !isPlucking) {
+                    isPlucking = true;
+                    pluckString(freq);
+                } else if (!fingerTouching && isPlucking) {
+                    isPlucking = false;
+                }
+
+            } else {
+                distDisplay.textContent = "-- px";
+                freqDisplay.textContent = "-- Hz";
+            }
+        }
+
+        function drawPoint(x, y, color, size) {
+            canvasCtx.beginPath();
+            canvasCtx.arc(x, y, size, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = color;
+            canvasCtx.fill();
+        }
+
+        function drawSkeleton(landmarks, w, h) {
+            canvasCtx.strokeStyle = "rgba(255,255,255,0.45)";
+            canvasCtx.lineWidth = 2;
+            const connections = [
+                [0,1],[1,2],[2,3],[3,4],
+                [0,5],[5,6],[6,7],[7,8],
+                [5,9],[9,10],[10,11],[11,12],
+                [9,13],[13,14],[14,15],[15,16],
+                [13,17],[17,18],[18,19],[19,20],
+                [0,17]
+            ];
+
+            for (const [startIdx, endIdx] of connections) {
+                const start = landmarks[startIdx];
+                const end = landmarks[endIdx];
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(start.x * w, start.y * h);
+                canvasCtx.lineTo(end.x * w, end.y * h);
+                canvasCtx.stroke();
+            }
+            
+            for (const lm of landmarks) {
+                drawPoint(lm.x * w, lm.y * h, "#38bdf8", 3);
+            }
+        }
+
+        function mapRange(value, inMin, inMax, outMin, outMax) {
+            return (value - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
+        }
+
+        function distToSegment(p, v, w) {
+            const l2 = (v.x - w.x)**2 + (v.y - w.y)**2;
+            if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+            let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            const proj = { x: v.x + t * (w.x - v.x), y: v.y + t * (w.y - v.y) };
+            return Math.hypot(p.x - proj.x, p.y - proj.y);
+        }
+    </script>
+</body>
+</html>
